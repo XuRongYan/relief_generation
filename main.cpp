@@ -18,13 +18,14 @@ using namespace pmp;
 
 
 const string OBJ_DIR = "/Users/xry/Desktop/lessons/ComputerGraphics/obj/"; //obj文件父路径
-const string OBJ_NAME = "eight_half.obj";                                  //obj文件名
+const string OBJ_NAME = "half_horse.obj";                                  //obj文件名
 const string OBJ_PLANE_NAME = "plane.obj";
 const string OBJ_RESULT_PATH = "./";
 const string OBJ_RESULT_NAME = "res.obj";
+const string OBJ_RESULT_REMESH = "remesh.obj";
 const string PROPERTY_VERTEX_NEIGHBOR = "vertex_around_vertex";
 const string PROPERTY_FACE_NEIGHBOR = "face_around_vertex";
-const Scalar BETA = 0.3;
+const Scalar BETA = 0.1;
 
 typedef SurfaceMesh::FaceAroundVertexCirculator FaceNeighbors;
 typedef SurfaceMesh::VertexAroundVertexCirculator VertexNeighbors;
@@ -34,7 +35,7 @@ Scalar avg_gradient;
 
 int readMesh(SurfaceMesh &, const string &);
 
-int saveMesh(const SurfaceMesh &);
+int saveMesh(const SurfaceMesh &mesh, string path);
 
 int showMesh(const string &);
 
@@ -85,9 +86,9 @@ int readMesh(SurfaceMesh &mesh, const string &path) {
  * @param mesh
  * @return
  */
-int saveMesh(const SurfaceMesh &mesh) {
+int saveMesh(const SurfaceMesh &mesh, string path) {
     cout << "正在保存mesh……" << endl;
-    bool success = mesh.write(OBJ_RESULT_PATH + OBJ_RESULT_NAME);
+    bool success = mesh.write(path);
     cout << (success ? "保存成功" : "保存失败") << endl;
     return 0;
 }
@@ -210,7 +211,7 @@ Eigen::Vector3f get_gradient_Phi(const SurfaceMesh &mesh, const Face &face, cons
     for (auto v : mesh.vertices(face)) {
         if (v == point) index = i;
         Point p = mesh.position(v);
-        //if(mesh.is_boundary(v)) p[1] = 0;
+        if(mesh.is_boundary(v)) p[1] = 0;
         points.push_back(p);
         i++;
     }
@@ -227,8 +228,8 @@ Eigen::Vector3f get_gradient_Phi(const SurfaceMesh &mesh, const Face &face, cons
     ev2 << v2[0], v2[1], v2[2];
     en << n[0], n[1], n[2];
     m_left << ev1.transpose(),
-            ev2.transpose(),
-            en.transpose();
+              ev2.transpose(),
+              en.transpose();
     Eigen::Matrix3f res = m_left.inverse() * m_right;
     return res.col(index);
 }
@@ -246,9 +247,9 @@ Eigen::Vector3f getGradientField(const SurfaceMesh &mesh, const Face &f) {
     pi = mesh.position(vi);
     pj = mesh.position(vj);
     pk = mesh.position(vk);
-//    if(mesh.is_boundary(vi)) pi[1] = 0;
-//    if(mesh.is_boundary(vj)) pj[1] = 0;
-//    if(mesh.is_boundary(vk)) pk[1] = 0;
+    if(mesh.is_boundary(vi)) pi[1] = 0;
+    if(mesh.is_boundary(vj)) pj[1] = 0;
+    if(mesh.is_boundary(vk)) pk[1] = 0;
     Eigen::Vector3f vpi, vpj, vpk;
     vpi << pi[0], pi[1], pi[2];
     vpj << pj[0], pj[1], pj[2];
@@ -270,41 +271,31 @@ Eigen::Vector3f getGradientField(const SurfaceMesh &mesh, const Face &f) {
 Eigen::MatrixXf generate_b(SurfaceMesh &mesh) {
     cout << "正在生成目标矩阵场" << endl;
     const int n = mesh.n_vertices();
-    Eigen::VectorXf divw = Eigen::VectorXf::Zero(2 * n);
+    Eigen::VectorXf divw = Eigen::VectorXf::Zero(n);
     int idx = 0;
     //n*3
     for (auto v : mesh.vertices()) {
         Scalar res = 0;
-        //res << 0, 0, 0;
         for (auto f : FaceNeighbors(&mesh, v)) {
-            //Point p[3];
+            Point p[3];
             Scalar area = 0;
-//            if(mesh.is_boundary(f)) {
-//                int i = 0;
-//                for(auto vv: mesh.vertices(f)) {
-//                    p[i] = mesh.position(vv);
-//                    if(mesh.is_boundary(vv)) p[i][1] = 0;
-//                    i++;
-//                }
-//                area = triangle_area(p[0], p[1], p[2]);
-//            } else {
+            if(mesh.is_boundary(f)) {
+                int i = 0;
+                for(auto vv: mesh.vertices(f)) {
+                    p[i] = mesh.position(vv);
+                    if(mesh.is_boundary(vv)) p[i][1] = 0;
+                    i++;
+                }
+                area = triangle_area(p[0], p[1], p[2]);
+            } else {
                 area = triangle_area(mesh, f);
-            //}
+            }
             Eigen::Vector3f grad_ti = get_gradient_Phi(mesh, f, v);
-            //cout << grad_ti.transpose() << "\n" << getGradientField(mesh, f) << endl;
             res += area * grad_ti.transpose() * getGradientField(mesh, f);
         }
         divw.row(idx++) << res;
     }
-    for(auto v : mesh.vertices()) {
-        if (mesh.is_boundary(v)) {
-            divw.row(idx++) << 0;
-        } else {
-            divw.row(idx++) << mesh.position(v)[1];
-        }
-    }
     cout << "目标矩阵场生成完毕" << endl;
-    //cout << divw;
     return divw;
 }
 
@@ -323,7 +314,7 @@ SparseMatrixType generate_Laplace(const SurfaceMesh &mesh) {
         count0 += mesh.valence(v) + 1;
     }
     typedef Eigen::Triplet<Scalar> T;
-    vector<T> tripletList(count0 + vn);
+    vector<T> tripletList(count0);
     //n*n
     for (auto v : mesh.vertices()) {
         int i = 0;
@@ -337,12 +328,7 @@ SparseMatrixType generate_Laplace(const SurfaceMesh &mesh) {
         }
         tripletList[begin_N[v.idx()]] = T(v.idx(), v.idx(), sum_weight);
     }
-    int j = 0;
-    //n*n
-    for(auto v : mesh.vertices()) {
-       tripletList[count0 + j + 1] = T(v.idx() + vn, v.idx(), 1);
-    }
-    Eigen::SparseMatrix<Scalar> Ls(2 * vn, vn);
+    Eigen::SparseMatrix<Scalar> Ls(vn, vn);
     Ls.setFromTriplets(tripletList.begin(), tripletList.end());
     cout << "拉普拉斯矩阵生成完毕" << endl;
     return Ls;
@@ -414,30 +400,20 @@ bool innerAngle(const SurfaceMesh &mesh, const Face &f) {
     return true;
 }
 
-//bool normalAngle(const Face &f) {
-//
-//}
-//
-//bool faceGradient(const Face &f) {
-//
-//}
-//
-//int optimizeHighSlopes(SurfaceMesh &mesh) {
-//
-//}
 
 int main() {
     SurfaceMesh mesh, plane;
     readMesh(mesh, OBJ_DIR + OBJ_NAME);
-    dragZ(mesh, 10);
+    //dragZ(mesh, 2);
     Scalar avg_scalar = remeshing(mesh);
     simplification(mesh, avg_scalar);
+    saveMesh(mesh, OBJ_RESULT_PATH + OBJ_RESULT_REMESH);
     init(mesh);
     Eigen::SparseMatrix<Scalar> Ls = generate_Laplace(mesh);
     Eigen::MatrixXf b = generate_b(mesh);
     solve_poison(mesh, Ls, b);
     compression(mesh, BETA);
-    saveMesh(mesh);
+    saveMesh(mesh, OBJ_RESULT_PATH + OBJ_RESULT_NAME);
     showMesh(OBJ_RESULT_PATH + OBJ_RESULT_NAME);
     return 0;
 }
