@@ -30,19 +30,35 @@ typedef SurfaceMesh::FaceAroundVertexCirculator FaceNeighbors;
 typedef SurfaceMesh::VertexAroundVertexCirculator VertexNeighbors;
 typedef Eigen::SparseMatrix<Scalar> SparseMatrixType;
 
-int readMesh(SurfaceMesh&, const string&);
-int saveMesh(const SurfaceMesh&);
-int showMesh(const string&);
-int init(SurfaceMesh&);
-int getVertexNeighborProperty(SurfaceMesh&);
-int getFaceNeighborProperty(SurfaceMesh&);
-Scalar remeshing(SurfaceMesh&);
-int simplification(SurfaceMesh&, Scalar);
-Eigen::Vector3f get_gradient_Phi(const SurfaceMesh&, const Face&, const Vertex&);
-Eigen::MatrixXf generate_b(SurfaceMesh&);
+Scalar avg_gradient;
+
+int readMesh(SurfaceMesh &, const string &);
+
+int saveMesh(const SurfaceMesh &);
+
+int showMesh(const string &);
+
+int init(SurfaceMesh &);
+
+int getFaceNeighborProperty(SurfaceMesh &);
+
+Scalar remeshing(SurfaceMesh &);
+
+int simplification(SurfaceMesh &, Scalar);
+
+Eigen::Vector3f get_gradient_Phi(const SurfaceMesh &, const Face &, const Vertex &);
+
+Eigen::MatrixXf generate_b(SurfaceMesh &);
+
 SparseMatrixType generate_Laplace(const SurfaceMesh &mesh);
-int solve_poison(SurfaceMesh&, const SparseMatrixType&, const Eigen::MatrixXf&);
-int compression(SurfaceMesh&, Scalar);
+
+int solve_poison(SurfaceMesh &, const SparseMatrixType &, const Eigen::MatrixXf &);
+
+int compression(SurfaceMesh &, Scalar);
+
+int optimizeHighSlopes(SurfaceMesh &mesh);
+
+Eigen::Vector3f getGradientField(const SurfaceMesh &mesh, const Face &f);
 
 
 /**
@@ -50,7 +66,7 @@ int compression(SurfaceMesh&, Scalar);
  * @param mesh
  * @return
  */
-int readMesh(SurfaceMesh &mesh, const string& path) {
+int readMesh(SurfaceMesh &mesh, const string &path) {
     cout << "正在读取mesh……, 路径：" << path << endl;
     bool success = mesh.read(path);
     if (success) {
@@ -64,6 +80,11 @@ int readMesh(SurfaceMesh &mesh, const string& path) {
     return 0;
 }
 
+/**
+ * 保存mesh
+ * @param mesh
+ * @return
+ */
 int saveMesh(const SurfaceMesh &mesh) {
     cout << "正在保存mesh……" << endl;
     bool success = mesh.write(OBJ_RESULT_PATH + OBJ_RESULT_NAME);
@@ -71,57 +92,76 @@ int saveMesh(const SurfaceMesh &mesh) {
     return 0;
 }
 
-int showMesh(const string& path) {
+/**
+ * 显示mesh
+ * @param path
+ * @return
+ */
+int showMesh(const string &path) {
     MeshViewer viewer(path.data(), 800, 450);
     viewer.load_mesh(path.data());
+    viewer.draw(OBJ_DIR + OBJ_PLANE_NAME);
     return viewer.run();
 }
 
-int getVertexNeighborProperty(SurfaceMesh& mesh) {
-    auto vertex_neighbor = mesh.add_vertex_property<size_t >(PROPERTY_VERTEX_NEIGHBOR);
-    for(auto v : mesh.vertices()) {
-        size_t n = 0;
-        for(auto vn : VertexNeighbors(&mesh, v)) {
-            n++;
-        }
-        vertex_neighbor[v] = n;
+/**
+ * 获取顶点周围面的数量
+ * @param mesh
+ * @return
+ */
+int getFaceNeighborProperty(SurfaceMesh &mesh) {
+    auto face_neighbor = mesh.add_vertex_property<size_t>(PROPERTY_FACE_NEIGHBOR);
+    for (auto v : mesh.vertices()) {
+        auto neighbors = FaceNeighbors(&mesh, v);
+        face_neighbor[v] = neighbors.end() - neighbors.begin() + 1;
     }
     return 0;
 }
 
-int getFaceNeighborProperty(SurfaceMesh& mesh) {
-    auto face_neighbor = mesh.add_vertex_property<size_t >(PROPERTY_FACE_NEIGHBOR);
-    for(auto v : mesh.vertices()) {
-        size_t n = 0;
-        for(auto f : FaceNeighbors(&mesh, v)) {
-            n++;
-        }
-        face_neighbor[v] = n;
+int dragZ(SurfaceMesh& mesh, Scalar zpp) {
+    for (auto v : mesh.vertices()) {
+        Point &p = mesh.position(v);
+        p[1] += zpp;
     }
     return 0;
 }
 
-int checkId(const SurfaceMesh& mesh) {
+/**
+ * 检查顶点是否按id顺序遍历
+ * @param mesh
+ * @return
+ */
+int checkId(const SurfaceMesh &mesh) {
     int i = 0;
     for (auto v : mesh.vertices()) {
-        if(v.idx() != i) {
+        if (v.idx() != i) {
             throw "disorderly vertices";
         }
     }
     return 0;
 }
 
-int init(SurfaceMesh& mesh) {
-    getVertexNeighborProperty(mesh);
+/**
+ * 初始化
+ * @param mesh
+ * @return
+ */
+int init(SurfaceMesh &mesh) {
+
     getFaceNeighborProperty(mesh);
     try {
         checkId(mesh);
-    } catch(const char* msg) {
+    } catch (const char *msg) {
         cout << msg << endl;
     }
     return 0;
 }
 
+/**
+ * remesh，取网格的平均边长作为参数
+ * @param mesh
+ * @return
+ */
 Scalar remeshing(SurfaceMesh &mesh) {
     cout << "正在进行remesh" << endl;
     SurfaceRemeshing remesh(mesh);
@@ -138,6 +178,12 @@ Scalar remeshing(SurfaceMesh &mesh) {
     return avg_scalar;
 }
 
+/**
+ * 简化网格，当三角形面片数量大于门限值时对网格进行简化
+ * @param mesh
+ * @param avg_scalar
+ * @return
+ */
 int simplification(SurfaceMesh &mesh, const Scalar avg_scalar) {
     cout << "正在进行simplification" << endl;
     SurfaceSimplification simplification1(mesh);
@@ -151,12 +197,20 @@ int simplification(SurfaceMesh &mesh, const Scalar avg_scalar) {
     return 0;
 }
 
+/**
+ * 获取梯度场
+ * @param mesh
+ * @param face
+ * @param point
+ * @return
+ */
 Eigen::Vector3f get_gradient_Phi(const SurfaceMesh &mesh, const Face &face, const Vertex &point) {
     vector<Point> points;
     int index = 0, i = 0;
     for (auto v : mesh.vertices(face)) {
         if (v == point) index = i;
         Point p = mesh.position(v);
+        //if(mesh.is_boundary(v)) p[1] = 0;
         points.push_back(p);
         i++;
     }
@@ -176,62 +230,117 @@ Eigen::Vector3f get_gradient_Phi(const SurfaceMesh &mesh, const Face &face, cons
             ev2.transpose(),
             en.transpose();
     Eigen::Matrix3f res = m_left.inverse() * m_right;
-
     return res.col(index);
 }
 
+Eigen::Vector3f getGradientField(const SurfaceMesh &mesh, const Face &f) {
+    Vertex vi, vj, vk;
+    int i = 0;
+    for (auto v : mesh.vertices(f)) {
+        if (i == 0) vi = v;
+        else if (i == 1) vj = v;
+        else vk = v;
+        i++;
+    }
+    Point pi, pj, pk;
+    pi = mesh.position(vi);
+    pj = mesh.position(vj);
+    pk = mesh.position(vk);
+//    if(mesh.is_boundary(vi)) pi[1] = 0;
+//    if(mesh.is_boundary(vj)) pj[1] = 0;
+//    if(mesh.is_boundary(vk)) pk[1] = 0;
+    Eigen::Vector3f vpi, vpj, vpk;
+    vpi << pi[0], pi[1], pi[2];
+    vpj << pj[0], pj[1], pj[2];
+    vpk << pk[0], pk[1], pk[2];
+    Scalar vpij = vpj[1] - vpi[1];
+    Scalar vpik = vpk[1] - vpi[1];
+    Eigen::Vector3f v1 = vpij * get_gradient_Phi(mesh, f, vj);
+    Eigen::Vector3f v2 = vpik * get_gradient_Phi(mesh, f, vk);
+    Eigen::Vector3f w = v1 + v2;
+    return w;
+
+}
+
+/**
+ * 生成目标矩阵场2n*n
+ * @param mesh
+ * @return
+ */
 Eigen::MatrixXf generate_b(SurfaceMesh &mesh) {
     cout << "正在生成目标矩阵场" << endl;
     const int n = mesh.n_vertices();
-    Eigen::MatrixXf divw(2 * n, 3);
+    Eigen::VectorXf divw = Eigen::VectorXf::Zero(2 * n);
     int idx = 0;
+    //n*3
     for (auto v : mesh.vertices()) {
-        Eigen::Vector3f res;
-        res << 0, 0, 0;
+        Scalar res = 0;
+        //res << 0, 0, 0;
         for (auto f : FaceNeighbors(&mesh, v)) {
+            //Point p[3];
+            Scalar area = 0;
+//            if(mesh.is_boundary(f)) {
+//                int i = 0;
+//                for(auto vv: mesh.vertices(f)) {
+//                    p[i] = mesh.position(vv);
+//                    if(mesh.is_boundary(vv)) p[i][1] = 0;
+//                    i++;
+//                }
+//                area = triangle_area(p[0], p[1], p[2]);
+//            } else {
+                area = triangle_area(mesh, f);
+            //}
             Eigen::Vector3f grad_ti = get_gradient_Phi(mesh, f, v);
-            res += triangle_area(mesh, f) * grad_ti;
+            //cout << grad_ti.transpose() << "\n" << getGradientField(mesh, f) << endl;
+            res += area * grad_ti.transpose() * getGradientField(mesh, f);
         }
-        divw.row(idx++) = res.transpose();
+        divw.row(idx++) << res;
     }
-    cout << "正在生成目标矩阵场的边界约束" << endl;
-    for (auto v : mesh.vertices()) {
-        Point p = mesh.position(v);
-        divw.row(idx++) << p[0], 0, p[2];
+    for(auto v : mesh.vertices()) {
+        if (mesh.is_boundary(v)) {
+            divw.row(idx++) << 0;
+        } else {
+            divw.row(idx++) << mesh.position(v)[1];
+        }
     }
     cout << "目标矩阵场生成完毕" << endl;
+    //cout << divw;
     return divw;
 }
 
-
+/**
+ * 生成拉普拉斯矩阵
+ * @param mesh
+ * @return
+ */
 SparseMatrixType generate_Laplace(const SurfaceMesh &mesh) {
     cout << "正在生成拉普拉斯矩阵" << endl;
     int vn = mesh.n_vertices();
     int count0 = 0;
-    auto n_neighbor = mesh.get_vertex_property<size_t >(PROPERTY_VERTEX_NEIGHBOR);
     vector<int> begin_N(vn);
     for (auto v : mesh.vertices()) {
         begin_N[v.idx()] = count0;
-        count0 += n_neighbor[v] + 1;
+        count0 += mesh.valence(v) + 1;
     }
     typedef Eigen::Triplet<Scalar> T;
     vector<T> tripletList(count0 + vn);
+    //n*n
     for (auto v : mesh.vertices()) {
-        int nei_n = n_neighbor[v] + 1;
-        tripletList[begin_N[v.idx()]] = T(v.idx(), v.idx(), -1 * nei_n);
         int i = 0;
         Scalar sum_weight = 0;
         for (auto nei_v : VertexNeighbors(&mesh, v)) {
             Edge e = mesh.find_edge(v, nei_v);
-            Scalar weight = cotan_weight(mesh, e);
-            tripletList[begin_N[v.idx()] + i + 1]= T(v.idx(), nei_v.idx(), weight);
+            Scalar weight = 0.5 * cotan_weight(mesh, e);
+            tripletList[begin_N[v.idx()] + i + 1] = T(v.idx(), nei_v.idx(), -weight);
             i++;
             sum_weight += weight;
         }
+        tripletList[begin_N[v.idx()]] = T(v.idx(), v.idx(), sum_weight);
     }
-    cout << "正在生成拉普拉斯矩阵边界约束" << endl;
-    for (int j = 0; j < vn; j++) {
-        tripletList[count0 + j] = T(vn + j, j, 1);
+    int j = 0;
+    //n*n
+    for(auto v : mesh.vertices()) {
+       tripletList[count0 + j + 1] = T(v.idx() + vn, v.idx(), 1);
     }
     Eigen::SparseMatrix<Scalar> Ls(2 * vn, vn);
     Ls.setFromTriplets(tripletList.begin(), tripletList.end());
@@ -239,22 +348,32 @@ SparseMatrixType generate_Laplace(const SurfaceMesh &mesh) {
     return Ls;
 }
 
+/**
+ * 最小二乘法求解方程
+ * @param mesh
+ * @param Ls
+ * @param b
+ * @return
+ */
 int solve_poison(SurfaceMesh &mesh, const SparseMatrixType &Ls, const Eigen::MatrixXf &b) {
     Eigen::SparseMatrix<Scalar> ls_transpose = Ls.transpose();
     Eigen::SparseMatrix<Scalar> LsLs = ls_transpose * Ls;
-    Eigen::SimplicialCholesky<Eigen::SparseMatrix<Scalar > > MatricsCholesky(LsLs);
-    Eigen::MatrixXf xyzRHS = ls_transpose * b;
-    Eigen::MatrixXf xyz = MatricsCholesky.solve(xyzRHS);
-    for(auto v : mesh.vertices()) {
+    Eigen::SimplicialCholesky<Eigen::SparseMatrix<Scalar> > MatricsCholesky(LsLs);
+    Eigen::VectorXf xyzRHS = ls_transpose * b;
+    Eigen::VectorXf xyz = MatricsCholesky.solve(xyzRHS);
+    for (auto v : mesh.vertices()) {
         Point &p = mesh.position(v);
-        p[0] = xyz.row(v.idx())[0];
-        p[1] = xyz.row(v.idx())[1];
-        p[2] = xyz.row(v.idx())[2];
+        p[1] = xyz[v.idx()];
     }
     return 0;
 }
 
-
+/**
+ * 对z轴线性压缩
+ * @param mesh
+ * @param beta
+ * @return
+ */
 int compression(SurfaceMesh &mesh, Scalar beta) {
     cout << "正在对z轴线性压缩" << endl;
     Scalar z_i, z_min = 0x3fffffff, z_max = -0x3fffffff;
@@ -286,16 +405,38 @@ int compression(SurfaceMesh &mesh, Scalar beta) {
     return 0;
 }
 
+bool innerAngle(const SurfaceMesh &mesh, const Face &f) {
+    vector<Vertex> vertices;
+    int i = 0;
+    for (auto v : mesh.vertices(f)) {
+        vertices[i++] = v;
+    }
+    return true;
+}
+
+//bool normalAngle(const Face &f) {
+//
+//}
+//
+//bool faceGradient(const Face &f) {
+//
+//}
+//
+//int optimizeHighSlopes(SurfaceMesh &mesh) {
+//
+//}
+
 int main() {
     SurfaceMesh mesh, plane;
     readMesh(mesh, OBJ_DIR + OBJ_NAME);
+    dragZ(mesh, 10);
     Scalar avg_scalar = remeshing(mesh);
     simplification(mesh, avg_scalar);
     init(mesh);
     Eigen::SparseMatrix<Scalar> Ls = generate_Laplace(mesh);
     Eigen::MatrixXf b = generate_b(mesh);
     solve_poison(mesh, Ls, b);
-    //compression(mesh, BETA);
+    compression(mesh, BETA);
     saveMesh(mesh);
     showMesh(OBJ_RESULT_PATH + OBJ_RESULT_NAME);
     return 0;
